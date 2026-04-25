@@ -5,23 +5,22 @@ import re
 from collections import defaultdict
 import random
 import urllib.request
-import urllib.error
 import json
 
-print("🔄 Bot starting...", flush=True)
+print("Bot starting...", flush=True)
 
 # ── Config ───────────────────────────────────────────────────────────────────
 DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN")
 GEMINI_KEY    = os.environ.get("GEMINI_API_KEY")
 
 if not DISCORD_TOKEN:
-    print("❌ ERROR: DISCORD_TOKEN missing!", flush=True)
+    print("ERROR: DISCORD_TOKEN missing!", flush=True)
     sys.exit(1)
 if not GEMINI_KEY:
-    print("❌ ERROR: GEMINI_API_KEY missing!", flush=True)
+    print("ERROR: GEMINI_API_KEY missing!", flush=True)
     sys.exit(1)
 
-print("✅ Env vars OK", flush=True)
+print("Env vars OK", flush=True)
 
 POKETWO_ID = 716390085896962058
 
@@ -50,7 +49,7 @@ COMMAND_CONTEXTS = [
     (re.compile(r"<@716390085896962058>\s+select\s+(\S+)", re.I),
      lambda m: f"selecting Pokémon #{m.group(1)} as their active one"),
 
-    # n! → P2A (Pokétwo Assistant)
+    # n! = P2A (Pokétwo Assistant)
     (re.compile(r"n!m\s*s", re.I),
      lambda m: "searching the Pokétwo market using P2A (n!m s)"),
 
@@ -66,7 +65,7 @@ COMMAND_CONTEXTS = [
     (re.compile(r"n!b\b", re.I),
      lambda m: "checking their Pokétwo balance using P2A"),
 
-    # pk! → Pickey (your naming/collection bot)
+    # pk! = Pickey (your naming/collection bot)
     (re.compile(r"pk!cl\b", re.I),
      lambda m: "viewing their Pokémon collection using Pickey (pk!cl)"),
 
@@ -103,15 +102,9 @@ Your vibe:
 - React to things like a person would. Laugh, clap back, hype them up, whatever fits.
 - Never be preachy."""
 
-GEMINI_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-2.0-flash:generateContent?key=" + GEMINI_KEY
-    if GEMINI_KEY else ""
-)
+GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_KEY}"
 
 def gemini(messages: list, max_tokens: int = 250) -> str:
-    """Call Gemini API with conversation history."""
-    # Build contents from message history
     contents = []
     for msg in messages:
         role = "user" if msg["role"] == "user" else "model"
@@ -135,7 +128,7 @@ def gemini(messages: list, max_tokens: int = 250) -> str:
             return data["candidates"][0]["content"]["parts"][0]["text"].strip()
     except Exception as e:
         print(f"Gemini error: {e}", flush=True)
-        return "lol idk what happened but something broke on my end"
+        return "lol something broke on my end"
 
 
 def get_ai_reply(user_id: int, prompt: str) -> str:
@@ -151,10 +144,6 @@ def get_ai_reply(user_id: int, prompt: str) -> str:
 def quick_reply(prompt: str) -> str:
     return gemini([{"role": "user", "content": prompt}], max_tokens=150)
 
-
-# ── Discord ───────────────────────────────────────────────────────────────────
-
-client = discord.Client(intents=discord.Intents.all())
 
 def detect_command(content: str):
     for pattern, describe in COMMAND_CONTEXTS:
@@ -191,9 +180,12 @@ def is_poketwo_spawn(message: discord.Message) -> str | None:
     return None
 
 
+client = discord.Client(intents=discord.Intents.all())
+
+
 @client.event
 async def on_ready():
-    print(f"✅ Online as {client.user}", flush=True)
+    print(f"Online as {client.user}", flush=True)
 
 
 @client.event
@@ -201,7 +193,7 @@ async def on_message(message: discord.Message):
     if message.author == client.user:
         return
 
-    # 1️⃣ Pokétwo catch
+    # 1. Pokétwo catch announcement
     pokemon = is_poketwo_catch(message)
     if pokemon:
         reply = quick_reply(
@@ -211,7 +203,7 @@ async def on_message(message: discord.Message):
         await message.channel.send(reply)
         return
 
-    # 2️⃣ Wild spawn (20% chance to comment)
+    # 2. Wild spawn — comment 20% of the time
     spawn = is_poketwo_spawn(message)
     if spawn:
         if random.random() < 0.2:
@@ -221,7 +213,7 @@ async def on_message(message: discord.Message):
             await message.channel.send(reply)
         return
 
-    # 3️⃣ Known command
+    # 3. Known bot command
     if message.author.id != POKETWO_ID:
         action = detect_command(message.content)
         if action:
@@ -232,7 +224,7 @@ async def on_message(message: discord.Message):
             await message.reply(reply)
             return
 
-    # 4️⃣ Bot pinged
+    # 4. Bot was pinged
     if client.user in message.mentions:
         user_msg = message.content.replace(f"<@{client.user.id}>", "").strip()
         if not user_msg:
@@ -241,7 +233,7 @@ async def on_message(message: discord.Message):
         await message.reply(reply)
         return
 
-    # 5️⃣ Ongoing convo
+    # 5. Ongoing conversation
     if conversation_history[message.author.id]:
         content = message.content.strip()
         if content and not content.startswith("/") and len(content) > 1:
@@ -249,81 +241,5 @@ async def on_message(message: discord.Message):
             await message.reply(reply)
 
 
-print("🔄 Connecting to Discord...", flush=True)
+print("Connecting to Discord...", flush=True)
 client.run(DISCORD_TOKEN)
-    """Call Claude with per-user conversation history."""
-    history = conversation_history[user_id]
-    history.append({"role": "user", "content": prompt})
-    if len(history) > 12:
-        history[:] = history[-12:]
-
-    response = ai.messages.create(
-        model="claude-opus-4-5",
-        max_tokens=250,
-        system=SYSTEM_PROMPT,
-        messages=history,
-    )
-    reply = response.content[0].text.strip()
-    history.append({"role": "assistant", "content": reply})
-    return reply
-
-
-def quick_reply(prompt: str) -> str:
-    """One-off reply with no conversation history (for catches/commands)."""
-    response = ai.messages.create(
-        model="claude-opus-4-5",
-        max_tokens=120,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return response.content[0].text.strip()
-
-
-# ── Events ────────────────────────────────────────────────────────────────────
-
-@client.event
-async def on_ready():
-    print(f"✅ Online as {client.user}")
-
-
-@client.event
-async def on_message(message: discord.Message):
-    if message.author == client.user:
-        return
-
-    # 1️⃣ Pokétwo catch — funny reaction
-    pokemon = is_poketwo_catch(message)
-    if pokemon:
-        reply = quick_reply(
-            f"Someone just caught a {pokemon} in Pokétwo. React naturally "
-            f"like a real person in a Discord server would — funny, hyped, or sarcastic. "
-            f"1-2 sentences max. Be specific to that Pokémon if you can."
-        )
-        await message.channel.send(reply)
-        return
-
-    # 2️⃣ Pokétwo command from a user — comment on what they're doing
-    if message.author.id != POKETWO_ID and starts_with_poke_command(message.content):
-        reply = quick_reply(
-            f"{message.author.display_name} used the Pokétwo command: `{message.content[:150]}`. "
-            f"React like a real Discord person watching them play — 1-2 sentences, casual and funny."
-        )
-        await message.reply(reply)
-        return
-
-    # 3️⃣ Bot was pinged — always respond
-    if client.user in message.mentions:
-        user_msg = message.content.replace(f"<@{client.user.id}>", "").strip()
-        if not user_msg:
-            user_msg = "someone just pinged you with no message"
-        reply = get_ai_reply(message.author.id, user_msg)
-        await message.reply(reply)
-        return
-
-    # 4️⃣ Ongoing convo — user already talked to bot, keep it going
-    if conversation_history[message.author.id]:
-        content = message.content.strip()
-        # Skip empty, bot commands, or slash commands
-        if content and not content.startswith("/") and not content.startswith("!") and len(content) > 1:
-            reply = get_ai_reply(message.author.id, content)
-            await message.reply(reply)
