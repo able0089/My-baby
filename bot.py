@@ -6,10 +6,10 @@ from collections import defaultdict
 import random
 import urllib.request
 import json
+import time
 
 print("Bot starting...", flush=True)
 
-# ── Config ───────────────────────────────────────────────────────────────────
 DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN")
 GEMINI_KEY    = os.environ.get("GEMINI_API_KEY")
 
@@ -67,6 +67,205 @@ COMMAND_CONTEXTS = [
 
     # pk! = Pickey (your naming/collection bot)
     (re.compile(r"pk!cl\b", re.I),
+     lambda m: "viewing their Pokémon collection using Pickey (pk!cl)"),
+
+    (re.compile(r"pk!sh\b", re.I),
+     lambda m: "checking their shiny hunt tracker on Pickey (pk!sh)"),
+
+    (re.compile(r"pk!n\b", re.I),
+     lambda m: "naming one of their Pokémon using Pickey"),
+
+    (re.compile(r"pk!top\b", re.I),
+     lambda m: "checking the Pickey leaderboard (pk!top)"),
+
+    (re.compile(r"pk!help\b", re.I),
+     lambda m: "opening the Pickey help menu"),
+]
+
+conversation_history = defaultdict(list)
+
+SYSTEM_PROMPT = """You are a chill, witty person hanging out in a Pokétwo Discord server. You talk like a real human — casual, funny, sometimes sarcastic, never robotic.
+
+Context about this server:
+- Pokétwo is the main bot — wild Pokémon spawn and users catch them by mentioning the bot
+- P2A (prefix n!) is a Pokétwo assistant bot — helps with market search, auctions, stats, balance
+- Pickey (prefix pk!) is a custom Pokémon naming and collection management bot
+
+Your vibe:
+- Talk like a real Discord user. Lowercase, abbreviations, slang. Not overly formal.
+- Read the energy and match it. Someone venting? Be chill. Someone hyped about a shiny? Go off.
+- Keep replies SHORT — 1 to 3 sentences. Only go longer if someone asks something detailed.
+- Never say "As an AI" or anything robotic. You're just a person in the server.
+- You know Pokémon well — types, rarities, evolutions, competitive stuff, lore.
+- Emojis sparingly — only when it genuinely fits.
+- No bullet points in casual chat. Just talk normally.
+- React to things like a person would. Laugh, clap back, hype them up, whatever fits.
+- Never be preachy."""
+
+# Try flash-lite first (higher free limits), fall back to flash
+MODELS = [
+    "gemini-2.0-flash-lite",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+]
+
+def gemini(messages: list, max_tokens: int = 250) -> str:
+    contents = []
+    for msg in messages:
+        role = "user" if msg["role"] == "user" else "model"
+        contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+
+    payload = json.dumps({
+        "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+        "contents": contents,
+        "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.9}
+    }).encode()
+
+    for model in MODELS:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_KEY}"
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read())
+                return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                print(f"429 on {model}, trying next model...", flush=True)
+                time.sleep(2)
+                continue
+            else:
+                print(f"HTTP {e.code} on {model}: {e.reason}", flush=True)
+                break
+        except Exception as e:
+            print(f"Error on {model}: {e}", flush=True)
+            break
+
+    return None  # All models failed
+
+
+def get_ai_reply(user_id: int, prompt: str) -> str:
+    history = conversation_history[user_id]
+    history.append({"role": "user", "content": prompt})
+    if len(history) > 12:
+        history[:] = history[-12:]
+    reply = gemini(history)
+    if reply:
+        history.append({"role": "assistant", "content": reply})
+    return reply
+
+
+def quick_reply(prompt: str) -> str:
+    return gemini([{"role": "user", "content": prompt}], max_tokens=150)
+
+
+def detect_command(content: str):
+    for pattern, describe in COMMAND_CONTEXTS:
+        m = pattern.search(content)
+        if m:
+            return describe(m)
+    return None
+
+
+def is_poketwo_catch(message: discord.Message) -> str | None:
+    if message.author.id != POKETWO_ID:
+        return None
+    for embed in message.embeds:
+        text = (embed.title or "") + " " + (embed.description or "")
+        match = re.search(r"caught (?:a |an )?(?:level \d+ )?(.+?)(?:!|\.)", text, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+    content = message.content.lower()
+    if "congratulations" in content and "caught" in content:
+        match = re.search(r"caught (?:a |an )?(.+?)(?:!|\.)", content, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+    return None
+
+
+def is_poketwo_spawn(message: discord.Message) -> str | None:
+    if message.author.id != POKETWO_ID:
+        return None
+    for embed in message.embeds:
+        text = (embed.title or "") + " " + (embed.description or "")
+        if "wild pokémon" in text.lower() or "appeared" in text.lower():
+            match = re.search(r"wild (.+?) has appeared", text, re.IGNORECASE)
+            return match.group(1).strip() if match else "mystery Pokémon"
+    return None
+
+
+client = discord.Client(intents=discord.Intents.all())
+
+
+@client.event
+async def on_ready():
+    print(f"Online as {client.user}", flush=True)
+
+
+@client.event
+async def on_message(message: discord.Message):
+    if message.author == client.user:
+        return
+
+    # 1. Pokétwo catch announcement
+    pokemon = is_poketwo_catch(message)
+    if pokemon:
+        reply = quick_reply(
+            f"Someone just caught a {pokemon} in Pokétwo. React like a real Discord person — "
+            f"funny, hyped, or sarcastic depending on how rare or trash {pokemon} is. 1-2 sentences."
+        )
+        if reply:
+            await message.channel.send(reply)
+        return
+
+    # 2. Wild spawn — comment 20% of the time
+    spawn = is_poketwo_spawn(message)
+    if spawn:
+        if random.random() < 0.2:
+            reply = quick_reply(
+                f"A wild {spawn} just spawned in Pokétwo. One short sentence — worth catching or nah?"
+            )
+            if reply:
+                await message.channel.send(reply)
+        return
+
+    # 3. Known bot command
+    if message.author.id != POKETWO_ID:
+        action = detect_command(message.content)
+        if action:
+            reply = quick_reply(
+                f"{message.author.display_name} is {action}. "
+                f"React like a real Discord person watching — casual and funny. 1-2 sentences."
+            )
+            if reply:
+                await message.reply(reply)
+            return
+
+    # 4. Bot was pinged
+    if client.user in message.mentions:
+        user_msg = message.content.replace(f"<@{client.user.id}>", "").strip()
+        if not user_msg:
+            user_msg = "someone pinged you with no message"
+        reply = get_ai_reply(message.author.id, user_msg)
+        if reply:
+            await message.reply(reply)
+        return
+
+    # 5. Ongoing conversation
+    if conversation_history[message.author.id]:
+        content = message.content.strip()
+        if content and not content.startswith("/") and len(content) > 1:
+            reply = get_ai_reply(message.author.id, content)
+            if reply:
+                await message.reply(reply)
+
+
+print("Connecting to Discord...", flush=True)
+client.run(DISCORD_TOKEN)
      lambda m: "viewing their Pokémon collection using Pickey (pk!cl)"),
 
     (re.compile(r"pk!sh\b", re.I),
