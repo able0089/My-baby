@@ -6,18 +6,17 @@ from collections import defaultdict
 import random
 import urllib.request
 import json
-import time
 
 print("Bot starting...", flush=True)
 
 DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN")
-GEMINI_KEY    = os.environ.get("GEMINI_API_KEY")
+GROQ_KEY      = os.environ.get("GROQ_API_KEY")
 
 if not DISCORD_TOKEN:
     print("ERROR: DISCORD_TOKEN missing!", flush=True)
     sys.exit(1)
-if not GEMINI_KEY:
-    print("ERROR: GEMINI_API_KEY missing!", flush=True)
+if not GROQ_KEY:
+    print("ERROR: GROQ_API_KEY missing!", flush=True)
     sys.exit(1)
 
 print("Env vars OK", flush=True)
@@ -102,50 +101,35 @@ Your vibe:
 - React to things like a person would. Laugh, clap back, hype them up, whatever fits.
 - Never be preachy."""
 
-# Try flash-lite first (higher free limits), fall back to flash
-MODELS = [
-    "gemini-2.0-flash-lite",
-    "gemini-2.0-flash",
-    "gemini-1.5-flash",
-]
 
-def gemini(messages: list, max_tokens: int = 250) -> str:
-    contents = []
-    for msg in messages:
-        role = "user" if msg["role"] == "user" else "model"
-        contents.append({"role": role, "parts": [{"text": msg["content"]}]})
-
+def groq(messages: list, max_tokens: int = 250) -> str:
     payload = json.dumps({
-        "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
-        "contents": contents,
-        "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.9}
+        "model": "llama-3.3-70b-versatile",
+        "messages": [{"role": "system", "content": SYSTEM_PROMPT}] + messages,
+        "max_tokens": max_tokens,
+        "temperature": 0.9
     }).encode()
 
-    for model in MODELS:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_KEY}"
-        req = urllib.request.Request(
-            url,
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST"
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                data = json.loads(resp.read())
-                return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-        except urllib.error.HTTPError as e:
-            if e.code == 429:
-                print(f"429 on {model}, trying next model...", flush=True)
-                time.sleep(2)
-                continue
-            else:
-                print(f"HTTP {e.code} on {model}: {e.reason}", flush=True)
-                break
-        except Exception as e:
-            print(f"Error on {model}: {e}", flush=True)
-            break
-
-    return None  # All models failed
+    req = urllib.request.Request(
+        "https://api.groq.com/openai/v1/chat/completions",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {GROQ_KEY}"
+        },
+        method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+            return data["choices"][0]["message"]["content"].strip()
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()
+        print(f"Groq HTTP {e.code}: {body}", flush=True)
+        return None
+    except Exception as e:
+        print(f"Groq error: {e}", flush=True)
+        return None
 
 
 def get_ai_reply(user_id: int, prompt: str) -> str:
@@ -153,14 +137,14 @@ def get_ai_reply(user_id: int, prompt: str) -> str:
     history.append({"role": "user", "content": prompt})
     if len(history) > 12:
         history[:] = history[-12:]
-    reply = gemini(history)
+    reply = groq(history)
     if reply:
         history.append({"role": "assistant", "content": reply})
     return reply
 
 
 def quick_reply(prompt: str) -> str:
-    return gemini([{"role": "user", "content": prompt}], max_tokens=150)
+    return groq([{"role": "user", "content": prompt}], max_tokens=150)
 
 
 def detect_command(content: str):
