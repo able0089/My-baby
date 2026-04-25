@@ -1,43 +1,41 @@
 import discord
 import sys
-
-print("🔄 Bot starting...", flush=True)
 import os
 import re
-import anthropic
 from collections import defaultdict
 import random
+import urllib.request
+import urllib.error
+import json
+
+print("🔄 Bot starting...", flush=True)
 
 # ── Config ───────────────────────────────────────────────────────────────────
 DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN")
-ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY")
+GEMINI_KEY    = os.environ.get("GEMINI_API_KEY")
 
 if not DISCORD_TOKEN:
     print("❌ ERROR: DISCORD_TOKEN missing!", flush=True)
     sys.exit(1)
-if not ANTHROPIC_KEY:
-    print("❌ ERROR: ANTHROPIC_API_KEY missing!", flush=True)
+if not GEMINI_KEY:
+    print("❌ ERROR: GEMINI_API_KEY missing!", flush=True)
     sys.exit(1)
+
 print("✅ Env vars OK", flush=True)
 
-POKETWO_ID = 716390085896962058  # Pokétwo official bot
-
-# ── Command context map ───────────────────────────────────────────────────────
-# Each entry: (compiled regex, lambda match -> human description of what's happening)
+POKETWO_ID = 716390085896962058
 
 COMMAND_CONTEXTS = [
-
-    # ── Pokétwo (mention-based: <@716390085896962058>) ──────────────────────
     (re.compile(r"<@716390085896962058>\s+catch\s+(\S+)", re.I),
      lambda m: f"trying to catch a {m.group(1)} using Pokétwo"),
 
     (re.compile(r"<@716390085896962058>\s+hint", re.I),
-     lambda m: "asking Pokétwo for a hint on the currently spawned Pokémon"),
+     lambda m: "asking Pokétwo for a hint on the spawned Pokémon"),
 
     (re.compile(r"<@716390085896962058>\s+info", re.I),
-     lambda m: "checking their Pokémon's info/IVs on Pokétwo"),
+     lambda m: "checking their Pokémon info/IVs on Pokétwo"),
 
-    (re.compile(r"<@716390085896962060>\s+trade", re.I),
+    (re.compile(r"<@716390085896962058>\s+trade", re.I),
      lambda m: "initiating a trade on Pokétwo"),
 
     (re.compile(r"<@716390085896962058>\s+duel", re.I),
@@ -50,32 +48,25 @@ COMMAND_CONTEXTS = [
      lambda m: "evolving their Pokémon on Pokétwo"),
 
     (re.compile(r"<@716390085896962058>\s+select\s+(\S+)", re.I),
-     lambda m: f"selecting Pokémon #{m.group(1)} as their active one on Pokétwo"),
+     lambda m: f"selecting Pokémon #{m.group(1)} as their active one"),
 
-    # ── n! → P2A (Pokétwo Assistant) ────────────────────────────────────────
-    # P2A is a helper bot for Pokétwo — market, auctions, stats, etc.
-
+    # n! → P2A (Pokétwo Assistant)
     (re.compile(r"n!m\s*s", re.I),
-     lambda m: "searching the Pokétwo market using P2A (n!m s) — probably looking to buy a Pokémon"),
+     lambda m: "searching the Pokétwo market using P2A (n!m s)"),
 
     (re.compile(r"n!a\s*s", re.I),
-     lambda m: "browsing active Pokétwo auctions using P2A (n!a s)"),
+     lambda m: "browsing Pokétwo auctions using P2A (n!a s)"),
 
     (re.compile(r"n!a\s+b\b", re.I),
-     lambda m: "placing a bid on a Pokétwo auction using P2A (n!a b)"),
+     lambda m: "placing a bid on a Pokétwo auction using P2A"),
 
     (re.compile(r"n!stats\s+(\S+)", re.I),
      lambda m: f"looking up Pokétwo stats for {m.group(1)} using P2A"),
 
     (re.compile(r"n!b\b", re.I),
-     lambda m: "checking their Pokétwo balance using P2A (n!b)"),
+     lambda m: "checking their Pokétwo balance using P2A"),
 
-    (re.compile(r"n!p\b", re.I),
-     lambda m: "checking Pokémon prices on the Pokétwo market using P2A"),
-
-    # ── pk! → Pickey Assistant (your own Pokémon naming/management bot) ──────
-    # Pickey helps users name, organize, and manage their Pokémon collection
-
+    # pk! → Pickey (your naming/collection bot)
     (re.compile(r"pk!cl\b", re.I),
      lambda m: "viewing their Pokémon collection using Pickey (pk!cl)"),
 
@@ -83,30 +74,23 @@ COMMAND_CONTEXTS = [
      lambda m: "checking their shiny hunt tracker on Pickey (pk!sh)"),
 
     (re.compile(r"pk!n\b", re.I),
-     lambda m: "naming one of their Pokémon using Pickey (pk!n)"),
-
-    (re.compile(r"pk!dex\b", re.I),
-     lambda m: "looking something up in the Pokédex via Pickey (pk!dex)"),
+     lambda m: "naming one of their Pokémon using Pickey"),
 
     (re.compile(r"pk!top\b", re.I),
-     lambda m: "checking the Pickey leaderboard (pk!top) — probably comparing themselves to others"),
+     lambda m: "checking the Pickey leaderboard (pk!top)"),
 
     (re.compile(r"pk!help\b", re.I),
-     lambda m: "pulling up the Pickey help menu — new or confused about something"),
+     lambda m: "opening the Pickey help menu"),
 ]
 
 conversation_history = defaultdict(list)
 
-client = discord.Client(intents=discord.Intents.all())
-ai = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
-
-# ── System Prompt ─────────────────────────────────────────────────────────────
 SYSTEM_PROMPT = """You are a chill, witty person hanging out in a Pokétwo Discord server. You talk like a real human — casual, funny, sometimes sarcastic, never robotic.
 
 Context about this server:
-- Pokétwo is the main bot — wild Pokémon spawn and users catch them by mentioning the bot: @Pokétwo catch <name>
+- Pokétwo is the main bot — wild Pokémon spawn and users catch them by mentioning the bot
 - P2A (prefix n!) is a Pokétwo assistant bot — helps with market search, auctions, stats, balance
-- Pickey (prefix pk!) is a custom Pokémon naming and collection management bot made by the server owner
+- Pickey (prefix pk!) is a custom Pokémon naming and collection management bot
 
 Your vibe:
 - Talk like a real Discord user. Lowercase, abbreviations, slang. Not overly formal.
@@ -116,13 +100,63 @@ Your vibe:
 - You know Pokémon well — types, rarities, evolutions, competitive stuff, lore.
 - Emojis sparingly — only when it genuinely fits.
 - No bullet points in casual chat. Just talk normally.
-- React to things like a person would. Laugh, clap back, hype them up, whatever fits the moment.
-- Never be preachy or lecture people."""
+- React to things like a person would. Laugh, clap back, hype them up, whatever fits.
+- Never be preachy."""
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+GEMINI_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/models/"
+    "gemini-2.0-flash:generateContent?key=" + GEMINI_KEY
+    if GEMINI_KEY else ""
+)
+
+def gemini(messages: list, max_tokens: int = 250) -> str:
+    """Call Gemini API with conversation history."""
+    # Build contents from message history
+    contents = []
+    for msg in messages:
+        role = "user" if msg["role"] == "user" else "model"
+        contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+
+    payload = json.dumps({
+        "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+        "contents": contents,
+        "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.9}
+    }).encode()
+
+    req = urllib.request.Request(
+        GEMINI_URL,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+            return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except Exception as e:
+        print(f"Gemini error: {e}", flush=True)
+        return "lol idk what happened but something broke on my end"
+
+
+def get_ai_reply(user_id: int, prompt: str) -> str:
+    history = conversation_history[user_id]
+    history.append({"role": "user", "content": prompt})
+    if len(history) > 12:
+        history[:] = history[-12:]
+    reply = gemini(history)
+    history.append({"role": "assistant", "content": reply})
+    return reply
+
+
+def quick_reply(prompt: str) -> str:
+    return gemini([{"role": "user", "content": prompt}], max_tokens=150)
+
+
+# ── Discord ───────────────────────────────────────────────────────────────────
+
+client = discord.Client(intents=discord.Intents.all())
 
 def detect_command(content: str):
-    """Returns a human description of what the user is doing, or None."""
     for pattern, describe in COMMAND_CONTEXTS:
         m = pattern.search(content)
         if m:
@@ -131,7 +165,6 @@ def detect_command(content: str):
 
 
 def is_poketwo_catch(message: discord.Message) -> str | None:
-    """Detect Pokétwo catch announcement and return Pokémon name."""
     if message.author.id != POKETWO_ID:
         return None
     for embed in message.embeds:
@@ -148,7 +181,6 @@ def is_poketwo_catch(message: discord.Message) -> str | None:
 
 
 def is_poketwo_spawn(message: discord.Message) -> str | None:
-    """Detect a wild Pokémon spawn from Pokétwo."""
     if message.author.id != POKETWO_ID:
         return None
     for embed in message.embeds:
@@ -159,11 +191,72 @@ def is_poketwo_spawn(message: discord.Message) -> str | None:
     return None
 
 
-def get_ai_reply(user_id: int, prompt: str) -> str:
+@client.event
+async def on_ready():
+    print(f"✅ Online as {client.user}", flush=True)
+
+
+@client.event
+async def on_message(message: discord.Message):
+    if message.author == client.user:
+        return
+
+    # 1️⃣ Pokétwo catch
+    pokemon = is_poketwo_catch(message)
+    if pokemon:
+        reply = quick_reply(
+            f"Someone just caught a {pokemon} in Pokétwo. React like a real Discord person — "
+            f"funny, hyped, or sarcastic depending on how rare or trash {pokemon} is. 1-2 sentences."
+        )
+        await message.channel.send(reply)
+        return
+
+    # 2️⃣ Wild spawn (20% chance to comment)
+    spawn = is_poketwo_spawn(message)
+    if spawn:
+        if random.random() < 0.2:
+            reply = quick_reply(
+                f"A wild {spawn} just spawned in Pokétwo. One short sentence — worth catching or nah?"
+            )
+            await message.channel.send(reply)
+        return
+
+    # 3️⃣ Known command
+    if message.author.id != POKETWO_ID:
+        action = detect_command(message.content)
+        if action:
+            reply = quick_reply(
+                f"{message.author.display_name} is {action}. "
+                f"React like a real Discord person watching — casual and funny. 1-2 sentences."
+            )
+            await message.reply(reply)
+            return
+
+    # 4️⃣ Bot pinged
+    if client.user in message.mentions:
+        user_msg = message.content.replace(f"<@{client.user.id}>", "").strip()
+        if not user_msg:
+            user_msg = "someone pinged you with no message"
+        reply = get_ai_reply(message.author.id, user_msg)
+        await message.reply(reply)
+        return
+
+    # 5️⃣ Ongoing convo
+    if conversation_history[message.author.id]:
+        content = message.content.strip()
+        if content and not content.startswith("/") and len(content) > 1:
+            reply = get_ai_reply(message.author.id, content)
+            await message.reply(reply)
+
+
+print("🔄 Connecting to Discord...", flush=True)
+client.run(DISCORD_TOKEN)
+    """Call Claude with per-user conversation history."""
     history = conversation_history[user_id]
     history.append({"role": "user", "content": prompt})
     if len(history) > 12:
         history[:] = history[-12:]
+
     response = ai.messages.create(
         model="claude-opus-4-5",
         max_tokens=250,
@@ -176,9 +269,10 @@ def get_ai_reply(user_id: int, prompt: str) -> str:
 
 
 def quick_reply(prompt: str) -> str:
+    """One-off reply with no conversation history (for catches/commands)."""
     response = ai.messages.create(
         model="claude-opus-4-5",
-        max_tokens=150,
+        max_tokens=120,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}],
     )
@@ -197,52 +291,39 @@ async def on_message(message: discord.Message):
     if message.author == client.user:
         return
 
-    # 1️⃣ Pokétwo catch announcement
+    # 1️⃣ Pokétwo catch — funny reaction
     pokemon = is_poketwo_catch(message)
     if pokemon:
         reply = quick_reply(
-            f"Someone just caught a {pokemon} in Pokétwo. React like a real Discord person — "
-            f"funny, hyped, or sarcastic depending on how rare or trash {pokemon} is. 1-2 sentences."
+            f"Someone just caught a {pokemon} in Pokétwo. React naturally "
+            f"like a real person in a Discord server would — funny, hyped, or sarcastic. "
+            f"1-2 sentences max. Be specific to that Pokémon if you can."
         )
         await message.channel.send(reply)
         return
 
-    # 2️⃣ Wild Pokémon spawn (comment ~20% of the time to avoid spam)
-    spawn = is_poketwo_spawn(message)
-    if spawn:
-        if random.random() < 0.2:
-            reply = quick_reply(
-                f"A wild {spawn} just spawned in Pokétwo. One short sentence — is it worth catching or nah?"
-            )
-            await message.channel.send(reply)
+    # 2️⃣ Pokétwo command from a user — comment on what they're doing
+    if message.author.id != POKETWO_ID and starts_with_poke_command(message.content):
+        reply = quick_reply(
+            f"{message.author.display_name} used the Pokétwo command: `{message.content[:150]}`. "
+            f"React like a real Discord person watching them play — 1-2 sentences, casual and funny."
+        )
+        await message.reply(reply)
         return
 
-    # 3️⃣ Known bot command detected
-    if message.author.id != POKETWO_ID:
-        action = detect_command(message.content)
-        if action:
-            reply = quick_reply(
-                f"{message.author.display_name} is {action}. "
-                f"React like a real Discord person watching this — casual and funny. 1-2 sentences."
-            )
-            await message.reply(reply)
-            return
-
-    # 4️⃣ Bot was pinged
+    # 3️⃣ Bot was pinged — always respond
     if client.user in message.mentions:
         user_msg = message.content.replace(f"<@{client.user.id}>", "").strip()
         if not user_msg:
-            user_msg = "someone pinged you with no message"
+            user_msg = "someone just pinged you with no message"
         reply = get_ai_reply(message.author.id, user_msg)
         await message.reply(reply)
         return
 
-    # 5️⃣ Ongoing conversation — keep talking to them
+    # 4️⃣ Ongoing convo — user already talked to bot, keep it going
     if conversation_history[message.author.id]:
         content = message.content.strip()
-        if content and not content.startswith("/") and len(content) > 1:
+        # Skip empty, bot commands, or slash commands
+        if content and not content.startswith("/") and not content.startswith("!") and len(content) > 1:
             reply = get_ai_reply(message.author.id, content)
             await message.reply(reply)
-
-print("🔄 Connecting to Discord...", flush=True)
-client.run(DISCORD_TOKEN)
