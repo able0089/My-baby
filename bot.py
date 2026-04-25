@@ -1,4 +1,7 @@
 import discord
+import sys
+
+print("🔄 Bot starting...", flush=True)
 import os
 import re
 import anthropic
@@ -6,8 +9,16 @@ from collections import defaultdict
 import random
 
 # ── Config ───────────────────────────────────────────────────────────────────
-DISCORD_TOKEN = os.environ["DISCORD_TOKEN"]
-ANTHROPIC_KEY = os.environ["ANTHROPIC_API_KEY"]
+DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN")
+ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY")
+
+if not DISCORD_TOKEN:
+    print("❌ ERROR: DISCORD_TOKEN missing!", flush=True)
+    sys.exit(1)
+if not ANTHROPIC_KEY:
+    print("❌ ERROR: ANTHROPIC_API_KEY missing!", flush=True)
+    sys.exit(1)
+print("✅ Env vars OK", flush=True)
 
 POKETWO_ID = 716390085896962058  # Pokétwo official bot
 
@@ -232,3 +243,6 @@ async def on_message(message: discord.Message):
         if content and not content.startswith("/") and len(content) > 1:
             reply = get_ai_reply(message.author.id, content)
             await message.reply(reply)
+
+print("🔄 Connecting to Discord...", flush=True)
+client.run(DISCORD_TOKEN)
